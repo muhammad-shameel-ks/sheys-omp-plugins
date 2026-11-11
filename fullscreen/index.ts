@@ -12,7 +12,9 @@
  *   reporting, row diffing, images and resizes. The overlay renders the
  *   transcript's blocks bottom-up and the roots after it (the "dock": pending
  *   messages, todos, working row, editor, hook widgets, status line) pinned
- *   under them.
+ *   under them. The dock's leading blank rows and right-hand chips (the
+ *   throughput readout) float: the transcript shows through them, and the
+ *   "jump to latest" button floats over it too.
  * - The overlay never holds keys (`released` is pinned), so focus and input stay
  *   with the editor. It does own the dock's focus targets, so the TUI parks the
  *   hardware cursor on the editor. `hasOverlay()` ignores it, so global
@@ -34,6 +36,7 @@ import {
 	type OverlayHandle,
 	type OverlayOptions,
 	parseSgrMouse,
+	sliceByColumn,
 	TUI,
 	theme,
 	truncateToWidth,
@@ -41,6 +44,7 @@ import {
 } from "@oh-my-pi/pi-tui";
 import { TranscriptContainer, trimBlankEdges } from "@oh-my-pi/pi-tui/chrome/transcript-container";
 import { Composer } from "@oh-my-pi/pi-tui/prompt/composer";
+import { compositeLineAt } from "@oh-my-pi/pi-tui/render/composite";
 
 type OverlayEntry = TUI["overlayStack"][number];
 type InputResult = { consume?: boolean; data?: string } | undefined;
@@ -62,6 +66,13 @@ const OVERLAY_OPTIONS: OverlayOptions = {
 interface TranscriptBlockHooks {
 	setTranscriptAllocation?(rows: number, frame: { now: number; tick: number }): void;
 	isTranscriptBlockCompact?(): boolean;
+}
+
+/** Right-hand content of a floating dock row, in screen columns `[start, end)`. */
+interface FloatingChip {
+	readonly row: string;
+	readonly start: number;
+	readonly end: number;
 }
 
 interface Segment {
@@ -183,15 +194,39 @@ class FullscreenView implements Component, OverlayFocusOwner {
 		let dock: string[] = [];
 		for (const root of below) dock.push(...root.render(width));
 		if (dock.length > height) dock = dock.slice(dock.length - height);
-		const area = height - dock.length;
+		// The dock's leading rows that are blank or carry only a right-hand chip (the throughput
+		// readout) float: the transcript runs on behind them and shows through their empty cells.
+		const chips: (FloatingChip | undefined)[] = [];
+		for (const row of dock) {
+			const text = Bun.stripANSI(row);
+			const start = text.length - text.trimStart().length;
+			if (start === text.length) {
+				chips.push(undefined);
+				continue;
+			}
+			if (start < width / 2) break;
+			chips.push({ row, start, end: visibleWidth(row) - (text.length - text.trimEnd().length) });
+		}
+		const area = height - dock.length + chips.length;
 
 		const now = performance.now();
 		const segments = this.#segments(transcript, above, width, { now, tick: Math.floor(now / 80) });
 		const window = this.#layoutWindow(segments, area);
-		this.#hint = undefined;
-		if (this.#lastOffset > 0 && window.length > 0) window[window.length - 1] = this.#scrollHint(width, window.length - 1);
 		while (window.length < area) window.push("");
-		return [...window, ...dock];
+		const band = area - chips.length;
+		for (let index = 0; index < chips.length; index++) {
+			const chip = chips[index];
+			if (!chip) continue;
+			// One empty cell keeps the chip off the transcript text it covers.
+			const chipText = ` ${sliceByColumn(chip.row, chip.start, chip.end - chip.start, true)}`;
+			window[band + index] = compositeLineAt(window[band + index]!, chipText, chip.start - 1, chip.end - chip.start + 1, width);
+		}
+		// The button floats on the row above the first chip, or on the last floating row.
+		const firstChip = chips.findIndex(chip => chip !== undefined);
+		const hintRow = firstChip < 0 ? area - 1 : band + firstChip - 1;
+		this.#hint = undefined;
+		if (this.#lastOffset > 0 && hintRow >= 0) window[hintRow] = this.#scrollHint(window[hintRow]!, width, hintRow);
+		return [...window, ...dock.slice(chips.length)];
 	}
 
 	/** Another overlay that asked for the whole screen is on top: leave it a blank base. */
@@ -314,14 +349,16 @@ class FullscreenView implements Component, OverlayFocusOwner {
 		return { kind: "offset", offset: this.#lastOffset };
 	}
 
-	#scrollHint(width: number, row: number): string {
+	#scrollHint(base: string, width: number, row: number): string {
 		const rows = this.#lastOffset;
 		const label = ` ↓ ${rows} more line${rows === 1 ? "" : "s"} · click or Ctrl+End to jump to latest `;
-		const text = truncateToWidth(label, width);
+		const text = truncateToWidth(label, Math.max(0, width - 2));
 		const textWidth = visibleWidth(text);
-		const pad = Math.max(0, Math.floor((width - textWidth) / 2));
-		this.#hint = { row, start: pad, end: pad + textWidth };
-		return " ".repeat(pad) + theme.bg("selectedBg", theme.fg("accent", text));
+		const start = Math.max(1, Math.floor((width - textWidth) / 2));
+		this.#hint = { row, start, end: start + textWidth };
+		// A blank cell on each side separates the button from the transcript behind it.
+		const button = ` ${theme.bg("selectedBg", theme.fg("accent", text))} `;
+		return compositeLineAt(base, button, start - 1, Math.min(textWidth + 2, width - start + 1), width);
 	}
 
 	/** `delta` rows toward older content (negative: toward the latest). */
