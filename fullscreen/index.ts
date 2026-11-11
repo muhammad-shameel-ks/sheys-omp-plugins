@@ -15,6 +15,9 @@
  *   under them. The dock's leading blank rows and right-hand chips (the
  *   throughput readout) float: the transcript shows through them, and the
  *   "jump to latest" button floats over it too.
+ * - Mouse reporting is on (wheel, clicks), which takes the terminal's own text
+ *   selection away, so the view selects itself: a drag highlights transcript
+ *   cells anchored to content rows and copies the plain text on release.
  * - The overlay never holds keys (`released` is pinned), so focus and input stay
  *   with the editor. It does own the dock's focus targets, so the TUI parks the
  *   hardware cursor on the editor. `hasOverlay()` ignores it, so global
@@ -29,6 +32,7 @@
  * Built against omp 18.18.x; internals it relies on may move in other releases.
  */
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
+import { copyToClipboard } from "@oh-my-pi/pi-coding-agent/utils/clipboard";
 import {
 	type Component,
 	matchesKey,
@@ -36,6 +40,7 @@ import {
 	type OverlayHandle,
 	type OverlayOptions,
 	parseSgrMouse,
+	type SgrMouseEvent,
 	sliceByColumn,
 	TUI,
 	theme,
@@ -51,6 +56,8 @@ type InputResult = { consume?: boolean; data?: string } | undefined;
 
 /** Rows one mouse-wheel notch scrolls. */
 const WHEEL_ROWS = 3;
+/** How long the "Copied" pill stays up. */
+const FLASH_MS = 1500;
 /** Allocation transcript blocks get when laid out in full (what `TranscriptContainer.render` uses). */
 const FULL_ALLOCATION = Number.MAX_SAFE_INTEGER;
 const OVERLAY_OPTIONS: OverlayOptions = {
@@ -90,6 +97,61 @@ type ScrollState =
 	| { readonly kind: "anchor"; readonly key: object; readonly row: number };
 
 const FOLLOW: ScrollState = { kind: "follow" };
+
+/** A content row: row `row` of segment `key`, `fromEnd` rows above the end of the content (1 = last row). */
+interface RowRef {
+	readonly key: object;
+	readonly row: number;
+	readonly fromEnd: number;
+}
+
+/** A selection endpoint, anchored to content so it survives scrolling and output below it. */
+interface ContentPoint {
+	readonly key: object;
+	readonly row: number;
+	readonly col: number;
+}
+
+interface SegmentSource {
+	readonly transcript: TranscriptContainer | undefined;
+	readonly above: readonly Component[];
+	readonly width: number;
+}
+
+/** Selection bounds in content order; `start` is the earlier (higher) end. */
+interface SelectionRange {
+	readonly startFromEnd: number;
+	readonly startCol: number;
+	readonly endFromEnd: number;
+	readonly endCol: number;
+}
+
+/** Order two endpoints against `segments`; an endpoint whose segment was not pulled lies above them all. */
+function selectionRange(segments: readonly Segment[], a: ContentPoint, b: ContentPoint): SelectionRange {
+	const position = (point: ContentPoint): number => {
+		const segment = segments.find(candidate => candidate.key === point.key);
+		return segment === undefined ? Number.POSITIVE_INFINITY : segment.below + segment.rows.length - point.row;
+	};
+	const fa = position(a);
+	const fb = position(b);
+	const aFirst = fa > fb || (fa === fb && a.col <= b.col);
+	const [start, end, startFromEnd, endFromEnd] = aFirst ? [a, b, fa, fb] : [b, a, fb, fa];
+	return { startFromEnd, startCol: start.col, endFromEnd, endCol: end.col };
+}
+
+/**
+ * Selected columns `[from, to)` of a content row, up to its last visible
+ * character (`from >= to`: an empty row inside the selection); `undefined`
+ * outside the selection.
+ */
+function selectedColumns(range: SelectionRange, fromEnd: number, line: string): [number, number] | undefined {
+	if (fromEnd > range.startFromEnd || fromEnd < range.endFromEnd) return undefined;
+	const from = fromEnd === range.startFromEnd ? range.startCol : 0;
+	const textEnd = visibleWidth(Bun.stripANSI(line).trimEnd());
+	// The end cell is the one under the pointer, so it is included.
+	const to = Math.min(textEnd, fromEnd === range.endFromEnd ? range.endCol + 1 : textEnd);
+	return [from, to];
+}
 
 interface FullscreenState {
 	patched: boolean;
@@ -145,6 +207,14 @@ class FullscreenView implements Component, OverlayFocusOwner {
 	/** Screen cells of the "jump to latest" hint in the last frame; the view is painted from row 0. */
 	#hint: { readonly row: number; readonly start: number; readonly end: number } | undefined;
 	readonly #separatorKeys = new WeakMap<Component, object>();
+	/** Content row behind each transcript-area screen row of the last frame; `undefined` below short content. */
+	#rowMap: (RowRef | undefined)[] = [];
+	/** Segments the last frame pulled, bottom-up. */
+	#lastSegments: readonly Segment[] = [];
+	/** What the last frame laid out, so a copy can walk past the window. */
+	#source: SegmentSource | undefined;
+	#selection: { anchor: ContentPoint; head: ContentPoint; dragging: boolean } | undefined;
+	#flash: { text: string; until: number } | undefined;
 
 	constructor(composer: Composer) {
 		this.#composer = composer;
@@ -211,8 +281,10 @@ class FullscreenView implements Component, OverlayFocusOwner {
 
 		const now = performance.now();
 		const segments = this.#segments(transcript, above, width, { now, tick: Math.floor(now / 80) });
+		this.#source = { transcript, above, width };
 		const window = this.#layoutWindow(segments, area);
 		while (window.length < area) window.push("");
+		this.#paintSelection(window, width);
 		const band = area - chips.length;
 		for (let index = 0; index < chips.length; index++) {
 			const chip = chips[index];
@@ -226,6 +298,13 @@ class FullscreenView implements Component, OverlayFocusOwner {
 		const hintRow = firstChip < 0 ? area - 1 : band + firstChip - 1;
 		this.#hint = undefined;
 		if (this.#lastOffset > 0 && hintRow >= 0) window[hintRow] = this.#scrollHint(window[hintRow]!, width, hintRow);
+		const flash = this.#flash;
+		if (flash !== undefined && Date.now() < flash.until && window.length > 0) {
+			const pill = truncateToWidth(` ${flash.text} `, Math.max(0, width - 2));
+			const pillWidth = visibleWidth(pill);
+			const start = Math.max(0, width - pillWidth - 1);
+			window[0] = compositeLineAt(window[0]!, theme.bg("selectedBg", theme.fg("accent", pill)), start, pillWidth, width);
+		}
 		return [...window, ...dock.slice(chips.length)];
 	}
 
@@ -327,14 +406,20 @@ class FullscreenView implements Component, OverlayFocusOwner {
 		// Rows numbered from the end: the window shows (offset, offset + area].
 		const top = Math.min(total, offset + area);
 		const window: string[] = [];
+		const rowMap: RowRef[] = [];
 		for (let index = segments.length - 1; index >= 0; index--) {
 			const segment = segments[index]!;
 			const segmentTop = segment.below + segment.rows.length;
 			if (segmentTop <= offset || segment.below >= top) continue;
 			const first = Math.max(0, segmentTop - top);
 			const last = Math.min(segment.rows.length, segmentTop - offset);
-			for (let row = first; row < last; row++) window.push(segment.rows[row]!);
+			for (let row = first; row < last; row++) {
+				window.push(segment.rows[row]!);
+				rowMap.push({ key: segment.key, row, fromEnd: segmentTop - row });
+			}
 		}
+		this.#rowMap = rowMap;
+		this.#lastSegments = segments;
 		return window;
 	}
 
@@ -347,6 +432,124 @@ class FullscreenView implements Component, OverlayFocusOwner {
 			}
 		}
 		return { kind: "offset", offset: this.#lastOffset };
+	}
+
+	/** Invert the selected cells of the window's content rows. */
+	#paintSelection(window: string[], width: number): void {
+		const selection = this.#selection;
+		if (selection === undefined) return;
+		const range = selectionRange(this.#lastSegments, selection.anchor, selection.head);
+		for (let index = 0; index < this.#rowMap.length; index++) {
+			const line = window[index]!;
+			const columns = selectedColumns(range, this.#rowMap[index]!.fromEnd, line);
+			if (columns === undefined || columns[0] >= columns[1]) continue;
+			const [from, to] = columns;
+			const text = Bun.stripANSI(sliceByColumn(line, from, to - from, true));
+			window[index] = compositeLineAt(line, theme.inverse(text), from, to - from, width);
+		}
+	}
+
+	/**
+	 * Content under a transcript-area cell. Below short content, or over the
+	 * dock while dragging, it clamps to the end of the last content row.
+	 */
+	#pointAt(row: number, col: number): ContentPoint | undefined {
+		const map = this.#rowMap;
+		if (map.length === 0) return undefined;
+		const index = Math.max(0, Math.min(row, map.length - 1));
+		const ref = map[index]!;
+		return { key: ref.key, row: ref.row, col: row > index ? Number.MAX_SAFE_INTEGER : Math.max(0, col) };
+	}
+
+	/** Press starts a selection, a drag extends it (scrolling at the edges), release copies it. */
+	#handleSelectionMouse(event: SgrMouseEvent): void {
+		const selection = this.#selection;
+		if (event.leftClick) {
+			const point = event.row < this.#lastArea ? this.#pointAt(event.row, event.col) : undefined;
+			this.#selection = point === undefined ? undefined : { anchor: point, head: point, dragging: true };
+			this.ui.requestRender();
+			return;
+		}
+		if (selection === undefined || !selection.dragging) return;
+		const dragged = event.motion && (event.button & 3) === 0;
+		if (!dragged && !event.release) return;
+		if (dragged && event.row <= 0) this.scrollBy(1);
+		else if (dragged && event.row >= this.#lastArea - 1) this.scrollBy(-1);
+		const head = this.#pointAt(event.row, event.col) ?? selection.head;
+		this.#selection = { anchor: selection.anchor, head, dragging: !event.release };
+		if (event.release) this.#copySelection();
+		this.ui.requestRender();
+	}
+
+	#copySelection(): void {
+		const selection = this.#selection;
+		if (selection === undefined) return;
+		const { anchor, head } = selection;
+		if (anchor.key === head.key && anchor.row === head.row && anchor.col === head.col) {
+			// A plain click clears rather than selecting one cell.
+			this.#selection = undefined;
+			return;
+		}
+		const text = this.#selectedText(anchor, head);
+		if (text === "") return;
+		const lines = text.split("\n").length;
+		copyToClipboard(text).then(
+			() => this.#showFlash(`Copied ${lines} line${lines === 1 ? "" : "s"}`),
+			() => this.#showFlash("Copy failed"),
+		);
+	}
+
+	#showFlash(text: string): void {
+		this.#flash = { text, until: Date.now() + FLASH_MS };
+		this.ui.requestRender();
+		setTimeout(() => this.ui.requestRender(), FLASH_MS + 50);
+	}
+
+	/** Plain text of the selection, read past the window when the drag scrolled. */
+	#selectedText(anchor: ContentPoint, head: ContentPoint): string {
+		const source = this.#source;
+		if (source === undefined) return "";
+		const now = performance.now();
+		const segments: Segment[] = [];
+		const missing = new Set<object>([anchor.key, head.key]);
+		let total = 0;
+		for (const next of this.#segments(source.transcript, source.above, source.width, {
+			now,
+			tick: Math.floor(now / 80),
+		})) {
+			segments.push({ ...next, below: total });
+			total += next.rows.length;
+			missing.delete(next.key);
+			if (missing.size === 0) break;
+		}
+		// An endpoint's block is gone (rewind, cleared session).
+		if (missing.size > 0) return "";
+		const range = selectionRange(segments, anchor, head);
+		const lines: { text: string; fromLeft: boolean }[] = [];
+		for (let index = segments.length - 1; index >= 0; index--) {
+			const segment = segments[index]!;
+			const segmentTop = segment.below + segment.rows.length;
+			for (let row = 0; row < segment.rows.length; row++) {
+				const line = segment.rows[row]!;
+				const columns = selectedColumns(range, segmentTop - row, line);
+				if (columns === undefined) continue;
+				const [from, to] = columns;
+				const text = from < to ? Bun.stripANSI(sliceByColumn(line, from, to - from, true)).trimEnd() : "";
+				lines.push({ text, fromLeft: from === 0 });
+			}
+		}
+		// Drop the transcript's left margin, keeping relative indentation.
+		let indent = Number.POSITIVE_INFINITY;
+		for (const line of lines) {
+			if (line.fromLeft && line.text.trim() !== "") {
+				indent = Math.min(indent, line.text.length - line.text.trimStart().length);
+			}
+		}
+		if (!Number.isFinite(indent)) indent = 0;
+		return lines
+			.map(line => (line.fromLeft ? line.text.slice(indent) : line.text))
+			.join("\n")
+			.replace(/^\n+|\n+$/g, "");
 	}
 
 	#scrollHint(base: string, width: number, row: number): string {
@@ -379,7 +582,7 @@ class FullscreenView implements Component, OverlayFocusOwner {
 		this.ui.requestRender();
 	}
 
-	/** TUI-wide input listener: wheel and paging keys scroll the transcript. */
+	/** TUI-wide input listener: wheel, clicks and drags over the transcript, and paging keys. */
 	handleTuiInput(data: string): InputResult {
 		const top = this.ui.overlayStack.findLast(entry => isEntryVisible(this.ui, entry));
 		if (data.startsWith("\x1b[<")) {
@@ -387,7 +590,10 @@ class FullscreenView implements Component, OverlayFocusOwner {
 			if (!event) return undefined;
 			// Pickers and viewers that asked for the screen route their own pointer input.
 			if (top !== undefined && top.component !== this) return undefined;
-			if (event.wheel !== null) this.scrollBy(-event.wheel * WHEEL_ROWS);
+			if (event.wheel !== null) {
+				this.scrollBy(-event.wheel * WHEEL_ROWS);
+				return { consume: true };
+			}
 			const hint = this.#hint;
 			if (
 				event.leftClick &&
@@ -396,9 +602,17 @@ class FullscreenView implements Component, OverlayFocusOwner {
 				event.col >= hint.start &&
 				event.col < hint.end
 			) {
+				this.#selection = undefined;
 				this.scrollToBottom();
+				return { consume: true };
 			}
+			this.#handleSelectionMouse(event);
 			return { consume: true };
+		}
+		// Typing dismisses a finished selection.
+		if (this.#selection !== undefined && !this.#selection.dragging) {
+			this.#selection = undefined;
+			this.ui.requestRender();
 		}
 		if (top?.component !== this || this.ui.getFocused() !== this.#composer.editor) return undefined;
 		const page = Math.max(1, this.#lastArea - 2);

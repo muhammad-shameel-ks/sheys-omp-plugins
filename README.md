@@ -33,10 +33,12 @@ On by default.
 | Scroll | mouse wheel, PgUp / PgDn |
 | Jump to latest / top | Ctrl+End / Ctrl+Home, or click the `↓ N more lines` bar |
 | Toggle | `/fullscreen [on\|off]`; `OMP_FULLSCREEN=0` starts with it off |
+| Copy | drag over the transcript; it copies on release (drag past the top or bottom edge to scroll). A click or any key clears the highlight |
 
 Notes:
 
-- Mouse reporting is on while fullscreen, so select text with Shift+drag.
+- Selection covers the transcript only, not the editor or footer. The terminal's own
+  selection still works with Shift+drag (Option+drag in iTerm2).
 - Finished messages reach the shell's scrollback when the mode is turned off or omp exits.
 - It patches pi-tui internals at runtime (built against omp 18.18.x); an omp update can
   break it. `/fullscreen off` or `OMP_FULLSCREEN=0` falls back to the normal screen.
