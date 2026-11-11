@@ -1,0 +1,10 @@
+{
+	"name": "sheys-omp-plugins",
+	"version": "0.1.0",
+	"private": true,
+	"type": "module",
+	"description": "Personal oh-my-pi plugins",
+	"omp": {
+		"extensions": ["./fullscreen/index.ts"]
+	}
+}
