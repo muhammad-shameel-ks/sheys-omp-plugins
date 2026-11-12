@@ -35,6 +35,7 @@ import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 import { copyToClipboard } from "@oh-my-pi/pi-coding-agent/utils/clipboard";
 import {
 	type Component,
+	CURSOR_MARKER,
 	matchesKey,
 	type OverlayFocusOwner,
 	type OverlayHandle,
@@ -153,6 +154,65 @@ function selectedColumns(range: SelectionRange, fromEnd: number, line: string): 
 	return [from, to];
 }
 
+/** A dock cell, counted from the bottom of the screen (1 = last row): the dock is pinned there. */
+interface DockPoint {
+	readonly fromBottom: number;
+	readonly col: number;
+}
+
+/** Order two dock endpoints; rows count from the bottom like content rows count from the end. */
+function dockRange(a: DockPoint, b: DockPoint): SelectionRange {
+	const aFirst = a.fromBottom > b.fromBottom || (a.fromBottom === b.fromBottom && a.col <= b.col);
+	const [start, end] = aFirst ? [a, b] : [b, a];
+	return { startFromEnd: start.fromBottom, startCol: start.col, endFromEnd: end.fromBottom, endCol: end.col };
+}
+
+/**
+ * Box-drawing glyphs (the editor frame) at either end of a selected dock row. The
+ * left frame is `│` on some rows and `╰─` on others, so it turns into blanks of the
+ * same width and the shared margin goes with the rest of the indentation.
+ */
+const BOX_EDGE_START = /^[\u2500-\u257F]+/;
+const BOX_EDGE_END = /[\s\u2500-\u257F]+$/;
+
+/** Plain text of cells `[from, to)`; the editor's cursor marker is not text. */
+function plainCells(line: string, from: number, to: number): string {
+	return Bun.stripANSI(sliceByColumn(line, from, to - from, true).replaceAll(CURSOR_MARKER, ""));
+}
+
+/**
+ * Inverse-video cells `[from, to)` of `line`. A cursor marker inside them is
+ * kept in place, so the editor's hardware cursor stays where it was.
+ */
+function invertCells(line: string, [from, to]: [number, number], width: number): string {
+	if (from >= to) return line;
+	const marker = line.indexOf(CURSOR_MARKER);
+	const markerCol = marker < 0 ? -1 : visibleWidth(line.slice(0, marker));
+	const text = plainCells(line, from, to);
+	const painted =
+		markerCol >= from && markerCol <= to
+			? theme.inverse(sliceByColumn(text, 0, markerCol - from)) +
+				CURSOR_MARKER +
+				theme.inverse(sliceByColumn(text, markerCol - from, to - markerCol))
+			: theme.inverse(text);
+	return compositeLineAt(line, painted, from, to - from, width);
+}
+
+/** Selected rows as text: the common left margin of rows selected from column 0 is dropped. */
+function joinSelectedLines(lines: readonly { text: string; fromLeft: boolean }[]): string {
+	let indent = Number.POSITIVE_INFINITY;
+	for (const line of lines) {
+		if (line.fromLeft && line.text.trim() !== "") {
+			indent = Math.min(indent, line.text.length - line.text.trimStart().length);
+		}
+	}
+	if (!Number.isFinite(indent)) indent = 0;
+	return lines
+		.map(line => (line.fromLeft ? line.text.slice(indent) : line.text))
+		.join("\n")
+		.replace(/^\n+|\n+$/g, "");
+}
+
 interface FullscreenState {
 	patched: boolean;
 	/** Mode requested for this process (`/fullscreen`, `OMP_FULLSCREEN`). */
@@ -214,6 +274,10 @@ class FullscreenView implements Component, OverlayFocusOwner {
 	/** What the last frame laid out, so a copy can walk past the window. */
 	#source: SegmentSource | undefined;
 	#selection: { anchor: ContentPoint; head: ContentPoint; dragging: boolean } | undefined;
+	/** Selection over the dock (the editor's draft, status line); at most one of the two is set. */
+	#dockSelection: { anchor: DockPoint; head: DockPoint; dragging: boolean } | undefined;
+	/** Solid dock rows of the last frame, below the transcript area. */
+	#lastDock: readonly string[] = [];
 	#flash: { text: string; until: number } | undefined;
 
 	constructor(composer: Composer) {
@@ -305,7 +369,10 @@ class FullscreenView implements Component, OverlayFocusOwner {
 			const start = Math.max(0, width - pillWidth - 1);
 			window[0] = compositeLineAt(window[0]!, theme.bg("selectedBg", theme.fg("accent", pill)), start, pillWidth, width);
 		}
-		return [...window, ...dock.slice(chips.length)];
+		const solid = dock.slice(chips.length);
+		this.#lastDock = solid.slice();
+		this.#paintDockSelection(solid, width);
+		return [...window, ...solid];
 	}
 
 	/** Another overlay that asked for the whole screen is on top: leave it a blank base. */
@@ -442,11 +509,59 @@ class FullscreenView implements Component, OverlayFocusOwner {
 		for (let index = 0; index < this.#rowMap.length; index++) {
 			const line = window[index]!;
 			const columns = selectedColumns(range, this.#rowMap[index]!.fromEnd, line);
-			if (columns === undefined || columns[0] >= columns[1]) continue;
-			const [from, to] = columns;
-			const text = Bun.stripANSI(sliceByColumn(line, from, to - from, true));
-			window[index] = compositeLineAt(line, theme.inverse(text), from, to - from, width);
+			if (columns !== undefined) window[index] = invertCells(line, columns, width);
 		}
+	}
+
+	/** Invert the selected cells of the dock's rows (editor, status line, widgets). */
+	#paintDockSelection(dock: string[], width: number): void {
+		const selection = this.#dockSelection;
+		if (selection === undefined) return;
+		const range = dockRange(selection.anchor, selection.head);
+		for (let index = 0; index < dock.length; index++) {
+			const columns = selectedColumns(range, dock.length - index, dock[index]!);
+			if (columns !== undefined) dock[index] = invertCells(dock[index]!, columns, width);
+		}
+	}
+
+	/** The dock cell under a screen cell; above the dock it clamps to the start of its top row. */
+	#dockPointAt(row: number, col: number): DockPoint | undefined {
+		const rows = this.#lastDock.length;
+		if (rows === 0) return undefined;
+		const fromBottom = this.#lastArea + rows - row;
+		return fromBottom > rows ? { fromBottom: rows, col: 0 } : { fromBottom: Math.max(1, fromBottom), col: Math.max(0, col) };
+	}
+
+	/** Dock drags select screen cells; the dock does not scroll, so cells are its content. */
+	#handleDockSelectionMouse(event: SgrMouseEvent): void {
+		const selection = this.#dockSelection;
+		if (selection === undefined || !selection.dragging) return;
+		const dragged = event.motion && (event.button & 3) === 0;
+		if (!dragged && !event.release) return;
+		const head = this.#dockPointAt(event.row, event.col) ?? selection.head;
+		this.#dockSelection = { anchor: selection.anchor, head, dragging: !event.release };
+		if (event.release) {
+			const { anchor } = selection;
+			if (anchor.fromBottom === head.fromBottom && anchor.col === head.col) this.#dockSelection = undefined;
+			else this.#copyText(this.#dockText(dockRange(anchor, head)));
+		}
+		this.ui.requestRender();
+	}
+
+	/** Plain text of the selected dock cells, without the editor box's border glyphs. */
+	#dockText(range: SelectionRange): string {
+		const dock = this.#lastDock;
+		const lines: { text: string; fromLeft: boolean }[] = [];
+		for (let index = 0; index < dock.length; index++) {
+			const line = dock[index]!;
+			const columns = selectedColumns(range, dock.length - index, line);
+			if (columns === undefined) continue;
+			const [from, to] = columns;
+			let text = from < to ? plainCells(line, from, to).replace(BOX_EDGE_END, "") : "";
+			text = text.replace(BOX_EDGE_START, edge => " ".repeat(edge.length));
+			lines.push({ text: from === 0 ? text : text.trimStart(), fromLeft: from === 0 });
+		}
+		return joinSelectedLines(lines);
 	}
 
 	/**
@@ -463,13 +578,21 @@ class FullscreenView implements Component, OverlayFocusOwner {
 
 	/** Press starts a selection, a drag extends it (scrolling at the edges), release copies it. */
 	#handleSelectionMouse(event: SgrMouseEvent): void {
-		const selection = this.#selection;
 		if (event.leftClick) {
-			const point = event.row < this.#lastArea ? this.#pointAt(event.row, event.col) : undefined;
+			const inDock = event.row >= this.#lastArea;
+			const point = inDock ? undefined : this.#pointAt(event.row, event.col);
+			const dockPoint = inDock ? this.#dockPointAt(event.row, event.col) : undefined;
 			this.#selection = point === undefined ? undefined : { anchor: point, head: point, dragging: true };
+			this.#dockSelection =
+				dockPoint === undefined ? undefined : { anchor: dockPoint, head: dockPoint, dragging: true };
 			this.ui.requestRender();
 			return;
 		}
+		if (this.#dockSelection !== undefined) {
+			this.#handleDockSelectionMouse(event);
+			return;
+		}
+		const selection = this.#selection;
 		if (selection === undefined || !selection.dragging) return;
 		const dragged = event.motion && (event.button & 3) === 0;
 		if (!dragged && !event.release) return;
@@ -490,7 +613,10 @@ class FullscreenView implements Component, OverlayFocusOwner {
 			this.#selection = undefined;
 			return;
 		}
-		const text = this.#selectedText(anchor, head);
+		this.#copyText(this.#selectedText(anchor, head));
+	}
+
+	#copyText(text: string): void {
 		if (text === "") return;
 		const lines = text.split("\n").length;
 		copyToClipboard(text).then(
@@ -534,22 +660,11 @@ class FullscreenView implements Component, OverlayFocusOwner {
 				const columns = selectedColumns(range, segmentTop - row, line);
 				if (columns === undefined) continue;
 				const [from, to] = columns;
-				const text = from < to ? Bun.stripANSI(sliceByColumn(line, from, to - from, true)).trimEnd() : "";
+				const text = from < to ? plainCells(line, from, to).trimEnd() : "";
 				lines.push({ text, fromLeft: from === 0 });
 			}
 		}
-		// Drop the transcript's left margin, keeping relative indentation.
-		let indent = Number.POSITIVE_INFINITY;
-		for (const line of lines) {
-			if (line.fromLeft && line.text.trim() !== "") {
-				indent = Math.min(indent, line.text.length - line.text.trimStart().length);
-			}
-		}
-		if (!Number.isFinite(indent)) indent = 0;
-		return lines
-			.map(line => (line.fromLeft ? line.text.slice(indent) : line.text))
-			.join("\n")
-			.replace(/^\n+|\n+$/g, "");
+		return joinSelectedLines(lines);
 	}
 
 	#scrollHint(base: string, width: number, row: number): string {
@@ -603,6 +718,7 @@ class FullscreenView implements Component, OverlayFocusOwner {
 				event.col < hint.end
 			) {
 				this.#selection = undefined;
+				this.#dockSelection = undefined;
 				this.scrollToBottom();
 				return { consume: true };
 			}
@@ -610,8 +726,12 @@ class FullscreenView implements Component, OverlayFocusOwner {
 			return { consume: true };
 		}
 		// Typing dismisses a finished selection.
-		if (this.#selection !== undefined && !this.#selection.dragging) {
+		if (
+			(this.#selection !== undefined && !this.#selection.dragging) ||
+			(this.#dockSelection !== undefined && !this.#dockSelection.dragging)
+		) {
 			this.#selection = undefined;
+			this.#dockSelection = undefined;
 			this.ui.requestRender();
 		}
 		if (top?.component !== this || this.ui.getFocused() !== this.#composer.editor) return undefined;
