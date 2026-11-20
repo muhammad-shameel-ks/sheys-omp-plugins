@@ -28,6 +28,8 @@
  * - While the alt screen is up, omp's normal-screen frame provider is paused,
  *   as it is under any fullscreen overlay. Finished blocks reach the shell's
  *   scrollback when the mode is turned off or omp exits.
+ * - With the tool groups plugin, the live "Thinking…" pulse of a running group
+ *   is skipped: the summary row counts it and shimmers.
  *
  * Built against omp 18.18.x; internals it relies on may move in other releases.
  */
@@ -74,6 +76,54 @@ function dispatchTranscriptClick(block: object, row: number): boolean {
 		}
 	}
 	return false;
+}
+
+/** Tool groups plugin: whether a group is drawn live (see `LIVE_KEY` there). */
+const LIVE_KEY = Symbol.for("sheys-omp-plugins.toolgroups.live");
+function toolGroupLive(): boolean {
+	const probe = (globalThis as Record<symbol, unknown>)[LIVE_KEY] as (() => boolean) | undefined;
+	try {
+		return probe?.() === true;
+	} catch {
+		return false;
+	}
+}
+
+/** Facets of omp's live "Thinking…" pulse glyph. */
+const THINKING_PULSE: Record<string, true> = {
+	"✻": true,
+	"✼": true,
+	"❉": true,
+	"❊": true,
+	"✺": true,
+	"✹": true,
+	"✸": true,
+	"✶": true,
+};
+const SGR_PATTERN = /\x1b\[[0-9;]*m/g;
+
+/** A component's child list; the transcript tree is omp's, so trust the arrays as components. */
+function childrenOf(value: unknown): readonly Component[] | undefined {
+	if (typeof value !== "object" || value === null || !("children" in value)) return undefined;
+	const children = value.children;
+	return Array.isArray(children) ? (children as readonly Component[]) : undefined;
+}
+
+/**
+ * An assistant block whose only content is omp's live "Thinking…" pulse. A
+ * live group counts that thought in its summary and shimmers, so the pulse is
+ * a redundant row: skip the block. Structural on purpose (omp internals): a
+ * moved pulse simply leaves the block drawn.
+ */
+function thinkingPulseOnly(block: Component): boolean {
+	const content = childrenOf(block)?.[0];
+	const children = childrenOf(content);
+	if (children?.length !== 1) return false;
+	const pulse: unknown = children[0];
+	if (typeof pulse !== "object" || pulse === null || !("getText" in pulse) || typeof pulse.getText !== "function")
+		return false;
+	const shown = String(pulse.getText.call(pulse)).replace(SGR_PATTERN, "").trimStart();
+	return THINKING_PULSE[shown[0] ?? ""] === true && shown.slice(1).trimStart().startsWith("Thinking");
 }
 
 /** Rows one mouse-wheel notch scrolls. */
@@ -423,9 +473,11 @@ class FullscreenView implements Component, OverlayFocusOwner {
 	): Generator<Omit<Segment, "below">> {
 		let compactBelow: boolean | undefined;
 		const blocks = transcript?.children ?? [];
+		const groupsLive = toolGroupLive();
 		for (let index = blocks.length - 1; index >= 0; index--) {
 			const block = blocks[index]! as Component & TranscriptBlockHooks;
 			block.setTranscriptAllocation?.(FULL_ALLOCATION, frame);
+			if (groupsLive && thinkingPulseOnly(block)) continue;
 			const rows = trimBlankEdges(block.render(width));
 			if (rows.length === 0) continue;
 			const compact = block.isTranscriptBlockCompact?.() === true;

@@ -23,9 +23,10 @@
  *   no hook for them, so this patches pi-tui internals; the modules are loaded
  *   behind a guard, so an omp release that moves them only turns this part off.
  * - While a group is live, its summary shimmers with omp's native shimmer, so
- *   it follows `display.shimmer`. Only under the fullscreen plugin, where
- *   blocks are drawn fresh every frame: in the normal screen each frame could
- *   make omp replay the scrollback.
+ *   it follows `display.shimmer`, and the fullscreen plugin skips omp's live
+ *   "Thinking…" pulse, whose thought the summary already counts. Only under the
+ *   fullscreen plugin, where blocks are drawn fresh every frame: in the normal
+ *   screen each frame could make omp replay the scrollback.
  */
 import {
 	cfgExtensionTranscriptPresenters,
@@ -130,12 +131,16 @@ class Grouper {
 		this.#decided = 0;
 	}
 
-	/** End the current group; returns its newest call, which stops being the live one. */
+	/**
+	 * End the current group; returns the ids whose drawing may have changed: the
+	 * summary row (its shimmer stops once the group is no longer live) and the
+	 * newest call, which stops being the live one.
+	 */
 	#close(): string[] {
-		const last = this.current?.ids.at(-1);
+		const group = this.current;
 		this.current = undefined;
 		this.#pendingThoughts = 0;
-		return last === undefined ? [] : [last];
+		return group === undefined ? [] : [group.ids[0]!, group.ids.at(-1)!];
 	}
 
 	/** Start of a new message: the part cursor belongs to one assistant message. */
@@ -338,6 +343,14 @@ const clickGlobals = globalThis as typeof globalThis & { [CLICK_KEY]?: Map<strin
 const clickHandlers: Map<string, TranscriptClickHandler> = (clickGlobals[CLICK_KEY] ??= new Map());
 
 /**
+ * Shared with the fullscreen plugin: whether a group is drawn live. It hides
+ * omp's live "Thinking…" pulse, whose thought the summary already counts.
+ */
+const LIVE_KEY = Symbol.for("sheys-omp-plugins.toolgroups.live");
+type LiveProbe = () => boolean;
+const liveGlobals = globalThis as typeof globalThis & { [LIVE_KEY]?: LiveProbe };
+
+/**
  * Tool call ids a transcript block draws. Presentable blocks ask `ids.has(id)` for
  * each call they draw before doing anything else; a set that records the question
  * and answers no leaves the block untouched.
@@ -431,6 +444,7 @@ export default function toolgroups(pi: ExtensionAPI): void {
 		const group = grouper.current;
 		return enabled && agentRunning && group && group.ids.length > 1 ? group : undefined;
 	};
+	liveGlobals[LIVE_KEY] = () => liveGroup() !== undefined;
 
 	const shimmering = (group: Group): boolean =>
 		group === liveGroup() && !group.expanded && shimmerEnabled() && fullscreenActive();
