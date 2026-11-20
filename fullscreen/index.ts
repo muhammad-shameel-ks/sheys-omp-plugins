@@ -55,6 +55,27 @@ import { compositeLineAt } from "@oh-my-pi/pi-tui/render/composite";
 type OverlayEntry = TUI["overlayStack"][number];
 type InputResult = { consume?: boolean; data?: string } | undefined;
 
+/**
+ * Plain clicks on the transcript, for other plugins of this package (tool groups):
+ * `block` is the transcript block under the pointer and `row` its row, counted
+ * from the block's first non-blank row. A handler returns true when it acted.
+ */
+type TranscriptClickHandler = (block: object, row: number) => boolean;
+const CLICK_KEY = Symbol.for("sheys-omp-plugins.transcriptClick");
+const clickGlobals = globalThis as typeof globalThis & { [CLICK_KEY]?: Map<string, TranscriptClickHandler> };
+const clickHandlers: Map<string, TranscriptClickHandler> = (clickGlobals[CLICK_KEY] ??= new Map());
+
+function dispatchTranscriptClick(block: object, row: number): boolean {
+	for (const handler of clickHandlers.values()) {
+		try {
+			if (handler(block, row)) return true;
+		} catch {
+			// A broken handler must not break selection.
+		}
+	}
+	return false;
+}
+
 /** Rows one mouse-wheel notch scrolls. */
 const WHEEL_ROWS = 3;
 /** How long the "Copied" pill stays up. */
@@ -279,6 +300,8 @@ class FullscreenView implements Component, OverlayFocusOwner {
 	/** Solid dock rows of the last frame, below the transcript area. */
 	#lastDock: readonly string[] = [];
 	#flash: { text: string; until: number } | undefined;
+	/** The current press may be a click on a block: it is over the transcript and no selection was up. */
+	#clickCandidate = false;
 
 	constructor(composer: Composer) {
 		this.#composer = composer;
@@ -582,6 +605,8 @@ class FullscreenView implements Component, OverlayFocusOwner {
 			const inDock = event.row >= this.#lastArea;
 			const point = inDock ? undefined : this.#pointAt(event.row, event.col);
 			const dockPoint = inDock ? this.#dockPointAt(event.row, event.col) : undefined;
+			// A click that dismisses a selection only dismisses it.
+			this.#clickCandidate = point !== undefined && this.#selection === undefined && this.#dockSelection === undefined;
 			this.#selection = point === undefined ? undefined : { anchor: point, head: point, dragging: true };
 			this.#dockSelection =
 				dockPoint === undefined ? undefined : { anchor: dockPoint, head: dockPoint, dragging: true };
@@ -609,8 +634,9 @@ class FullscreenView implements Component, OverlayFocusOwner {
 		if (selection === undefined) return;
 		const { anchor, head } = selection;
 		if (anchor.key === head.key && anchor.row === head.row && anchor.col === head.col) {
-			// A plain click clears rather than selecting one cell.
+			// A plain click clears rather than selecting one cell, and may act on the block under it.
 			this.#selection = undefined;
+			if (this.#clickCandidate) dispatchTranscriptClick(anchor.key, anchor.row);
 			return;
 		}
 		this.#copyText(this.#selectedText(anchor, head));

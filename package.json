@@ -5,6 +5,6 @@
 	"type": "module",
 	"description": "Personal oh-my-pi plugins",
 	"omp": {
-		"extensions": ["./fullscreen/index.ts"]
+		"extensions": ["./fullscreen/index.ts", "./toolgroups/index.ts"]
 	}
 }
