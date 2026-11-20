@@ -69,7 +69,8 @@ Notes:
 - With `display.showTokenUsage`, omp adds a stats row after every model request. Rows of requests that
   ended in tool calls are hidden, so each turn keeps one row under its final answer. This part patches
   pi-tui internals and switches itself off if an omp update moves them.
-- While a group is live, its summary shimmers (fullscreen mode only, and not with `display.shimmer: disabled`).
+- While a group is live, its summary shimmers with omp's native shimmer, so `display.shimmer`
+  selects classic or KITT (fullscreen mode only; disabled stops it, as do reduced/no Motion).
 - Thoughts are counted but drawn by omp as usual (hide them with `hideThinkingBlock`).
 - Built on omp's public transcript presenter API, so it should survive omp updates better than Fullscreen.
   Without Fullscreen, Ctrl+O only re-expands blocks still on screen (stock omp behavior); with it, every group expands.

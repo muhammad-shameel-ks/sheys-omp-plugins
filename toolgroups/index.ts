@@ -22,9 +22,10 @@
  *   are hidden, so a turn keeps one stats row under its final answer. omp adds
  *   no hook for them, so this patches pi-tui internals; the modules are loaded
  *   behind a guard, so an omp release that moves them only turns this part off.
- * - While a group is live, its summary shimmers. Only under the fullscreen
- *   plugin, where blocks are drawn fresh every frame: in the normal screen each
- *   frame could make omp replay the scrollback.
+ * - While a group is live, its summary shimmers with omp's native shimmer, so
+ *   it follows `display.shimmer`. Only under the fullscreen plugin, where
+ *   blocks are drawn fresh every frame: in the normal screen each frame could
+ *   make omp replay the scrollback.
  */
 import {
 	cfgExtensionTranscriptPresenters,
@@ -32,7 +33,8 @@ import {
 	type ExtensionContext,
 	settings,
 } from "@oh-my-pi/pi-coding-agent";
-import { shimmerEnabled } from "@oh-my-pi/pi-tui";
+import { shimmerEnabled, shimmerText, theme } from "@oh-my-pi/pi-tui";
+import { styledSpans } from "@oh-my-pi/pi-tui/native/spans";
 
 /** Tools that draw in full and end the group they follow. */
 const UNGROUPED = new Set([
@@ -222,33 +224,16 @@ class Grouper {
 
 type Span = { t: string; s?: string };
 
-/** Milliseconds for the shimmer band to cross the text, then the pause before the next sweep. */
-const SHIMMER_SWEEP_MS = 1400;
-const SHIMMER_PAUSE_MS = 500;
-const SHIMMER_FRAME_MS = 80;
+/** omp's animated-row cadence: pi-tui repaints a live loader at 30fps. */
+const SHIMMER_FRAME_MS = 1000 / 30;
 
 /**
- * `text` with a bright band sweeping left to right over dim text: the band's
- * centre in the default foreground, its edges muted.
+ * The summary row: counts by kind, failures, and the expand hint; `shimmer`
+ * animates the counts with omp's native shimmer, so the row follows
+ * `display.shimmer` (classic, KITT) and its speed and palette. `shimmerText`
+ * paints ANSI and the presenter label needs spans, hence `styledSpans`.
  */
-function shimmerSpans(text: string, now: number): Span[] {
-	const band = 3;
-	const travel = text.length + band * 2;
-	const at = now % (SHIMMER_SWEEP_MS + SHIMMER_PAUSE_MS);
-	const centre = at < SHIMMER_SWEEP_MS ? (at / SHIMMER_SWEEP_MS) * travel - band : Number.NEGATIVE_INFINITY;
-	const spans: Span[] = [];
-	for (let index = 0; index < text.length; index++) {
-		const distance = Math.abs(index - centre);
-		const s = distance <= 1 ? undefined : distance <= band ? "muted" : "dim";
-		const last = spans.at(-1);
-		if (last && last.s === s) last.t += text[index];
-		else spans.push(s === undefined ? { t: text[index]! } : { t: text[index]!, s });
-	}
-	return spans;
-}
-
-/** The summary row: counts by kind, failures, and the expand hint; `shimmerAt` animates the counts. */
-function summaryLabel(group: Group, failed: ReadonlySet<string>, clickable: boolean, shimmerAt?: number): Span[] {
+function summaryLabel(group: Group, failed: ReadonlySet<string>, clickable: boolean, shimmer: boolean): Span[] {
 	const counts: Record<Category, number> = { commands: 0, reads: 0, searches: 0, tools: 0 };
 	for (const name of group.names) counts[CATEGORY_OF[name] ?? "tools"]++;
 	const pieces: string[] = [];
@@ -258,7 +243,7 @@ function summaryLabel(group: Group, failed: ReadonlySet<string>, clickable: bool
 		if (counts[category] > 0) pieces.push(plural(counts[category], NOUNS[category]));
 	}
 	const text = pieces.join(", ");
-	const spans: Span[] = shimmerAt === undefined ? [{ t: text, s: "muted" }] : shimmerSpans(text, shimmerAt);
+	const spans: Span[] = shimmer ? styledSpans(shimmerText(text, theme)) : [{ t: text, s: "muted" }];
 	const failures = group.ids.filter(id => failed.has(id)).length;
 	if (failures > 0) spans.push({ t: ", ", s: "muted" }, { t: plural(failures, NOUNS.failed), s: "error" });
 	spans.push({ t: clickable ? "  (click or ctrl+o to expand)" : "  (ctrl+o to expand)", s: "dim" });
@@ -486,8 +471,7 @@ export default function toolgroups(pi: ExtensionAPI): void {
 		if (group.ids.length === 1) return "compact";
 		if (group.expanded) return "full";
 		if (block.id === group.ids[0]) {
-			const shimmerAt = shimmering(group) ? performance.now() : undefined;
-			return { compact: { label: summaryLabel(group, grouper.failed, fullscreenActive(), shimmerAt) } };
+			return { compact: { label: summaryLabel(group, grouper.failed, fullscreenActive(), shimmering(group)) } };
 		}
 		const live = agentRunning && grouper.current === group;
 		if (live && block.id === group.ids.at(-1)) return "compact";
