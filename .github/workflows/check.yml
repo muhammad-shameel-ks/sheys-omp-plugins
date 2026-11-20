@@ -1,0 +1,32 @@
+name: check
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Install omp
+        run: bun install -g @oh-my-pi/pi-coding-agent@19.0.1
+
+      - name: Smoke test extensions
+        run: pnpm smoke

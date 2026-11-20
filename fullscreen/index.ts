@@ -293,6 +293,10 @@ interface FullscreenState {
 	handle: OverlayHandle | undefined;
 	removeInputListener: (() => void) | undefined;
 	activationQueued: boolean;
+	/** First render error; the mode stays off until `/fullscreen on` is run again. */
+	failure: string | undefined;
+	/** omp's file logger, so a failed frame never writes to the terminal. */
+	logger: ExtensionAPI["logger"] | undefined;
 	/** Overlays that asked for fullscreen themselves (pickers, viewers); everything else is a promoted popup. */
 	readonly ownFullscreen: WeakSet<Component>;
 }
@@ -308,6 +312,8 @@ const state: FullscreenState = (globals[STATE_KEY] ??= {
 	handle: undefined,
 	removeInputListener: undefined,
 	activationQueued: false,
+	failure: undefined,
+	logger: undefined,
 	ownFullscreen: new WeakSet(),
 });
 
@@ -387,6 +393,19 @@ class FullscreenView implements Component, OverlayFocusOwner {
 	}
 
 	render(width: number): readonly string[] {
+		try {
+			return this.#renderFrame(width);
+		} catch (error) {
+			this.#fail(error);
+			return Array.from({ length: Math.max(0, this.ui.terminal?.rows ?? 0) }, () => "");
+		}
+	}
+
+	/**
+	 * One frame. A throw here would escape into the host's render loop, so
+	 * `render` catches it and hands the screen back instead of wedging the UI.
+	 */
+	#renderFrame(width: number): readonly string[] {
 		const height = Math.max(0, this.ui.terminal.rows);
 		if (this.#coveredByFullscreenOverlay()) return Array.from({ length: height }, () => "");
 
@@ -446,6 +465,16 @@ class FullscreenView implements Component, OverlayFocusOwner {
 		this.#lastDock = solid.slice();
 		this.#paintDockSelection(solid, width);
 		return [...window, ...solid];
+	}
+
+	/** A frame threw: log once, turn the mode off, and hand the screen back to omp. */
+	#fail(error: unknown): void {
+		if (state.failure === undefined) {
+			state.failure = error instanceof Error ? (error.stack ?? error.message) : String(error);
+			state.logger?.error("Fullscreen disabled after a render error", { err: state.failure });
+		}
+		state.enabled = false;
+		queueMicrotask(() => deactivateSafely());
 	}
 
 	/** Another overlay that asked for the whole screen is on top: leave it a blank base. */
@@ -838,8 +867,11 @@ class FullscreenView implements Component, OverlayFocusOwner {
 
 function activate(): void {
 	const composer = state.composer;
-	if (!state.enabled || state.handle !== undefined || composer === undefined) return;
+	if (!state.enabled || composer === undefined) return;
 	const ui = composer.ui;
+	// Another live TUI took over the process: retire its predecessor before wiring this one.
+	if (state.handle !== undefined && state.view?.ui !== ui) deactivate();
+	if (state.handle !== undefined) return;
 	if (state.view?.ui !== ui) state.view = new FullscreenView(composer);
 	const view = state.view;
 	const focus = ui.getFocused();
@@ -871,6 +903,15 @@ function deactivate(): void {
 	handle.hide();
 	if (focus !== null && focus !== view) ui.setFocus(focus);
 	ui.requestRender();
+}
+
+/** `deactivate` for the failure path: a broken view must not throw out of the microtask. */
+function deactivateSafely(): void {
+	try {
+		deactivate();
+	} catch (error) {
+		state.logger?.error("Fullscreen teardown failed after a render error", { err: String(error) });
+	}
 }
 
 function queueActivation(): void {
@@ -916,7 +957,9 @@ function installPatches(): void {
 
 export default function fullscreen(pi: ExtensionAPI): void {
 	pi.setLabel("Fullscreen");
-	installPatches();
+	state.logger = pi.logger;
+	// `OMP_FULLSCREEN=0` leaves the host's prototypes untouched until the mode is switched on.
+	if (state.enabled) installPatches();
 
 	pi.registerCommand("fullscreen", {
 		description: "Toggle fullscreen mode: pinned editor and footer, scrollable transcript (on|off)",
@@ -924,8 +967,12 @@ export default function fullscreen(pi: ExtensionAPI): void {
 			const arg = args.trim().toLowerCase();
 			const enabled = arg === "on" ? true : arg === "off" ? false : !state.enabled;
 			state.enabled = enabled;
-			if (enabled) activate();
-			else deactivate();
+			if (enabled) {
+				installPatches();
+				// An explicit retry gets a fresh error log.
+				state.failure = undefined;
+				activate();
+			} else deactivate();
 			if (enabled && state.composer === undefined) {
 				ctx.ui.notify("Fullscreen needs the interactive terminal UI", "warning");
 				return;

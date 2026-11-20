@@ -1,5 +1,7 @@
 # sheys-omp-plugins
 
+[![check](https://github.com/muhammad-shameel-ks/sheys-omp-plugins/actions/workflows/check.yml/badge.svg)](https://github.com/muhammad-shameel-ks/sheys-omp-plugins/actions/workflows/check.yml)
+
 Personal [oh-my-pi](https://github.com/can1357/oh-my-pi) (omp) plugins.
 
 ## Install
@@ -22,11 +24,51 @@ git clone https://github.com/muhammad-shameel-ks/sheys-omp-plugins
 omp plugin link ./sheys-omp-plugins
 ```
 
+## Compatibility
+
+Tested against omp 18.18.x and 19.0.1.
+These plugins read pi-tui internals, so an omp update can move them out from under the code.
+
+```sh
+pnpm smoke
+```
+
+The smoke test loads both extensions in a headless omp and fails if either no longer registers its command.
+It catches broken host imports, which is how an omp update usually breaks these plugins.
+It needs `omp` on `PATH`.
+
+```sh
+pnpm typecheck
+```
+
+Type checks both plugins against the published 19.0.1 host types.
+
+```sh
+pnpm check
+```
+
+Runs both checks in one go; that is the CI entry point.
+
 ## Fullscreen
 
 Claude Code / Pi style fullscreen mode: the transcript scrolls inside the terminal's
 alternate screen while the editor, status line and widgets stay pinned to the bottom.
 On by default.
+
+```
+┌────────────────────────────────────────────┐
+│ transcript (scrolls)                       │
+│ • assistant text                           │
+│ • 13 commands, 9 thoughts  (ctrl+o)        │
+│            ↓ 42 more lines                 │
+├────────────────────────────────────────────┤
+│ pending messages, todos, working row       │
+│ ┌ editor ───────────────────────────────┐  │
+│ │ your draft                            │  │
+│ └───────────────────────────────────────┘  │
+│ status line                         70% ▍  │
+└────────────────────────────────────────────┘
+```
 
 | Action | Input |
 |---|---|
@@ -41,8 +83,13 @@ Notes:
   the composer drops the frame's border glyphs. The terminal's own selection still works
   with Shift+drag (Option+drag in iTerm2).
 - Finished messages reach the shell's scrollback when the mode is turned off or omp exits.
-- It patches pi-tui internals at runtime (built against omp 18.18.x); an omp update can
+- It patches pi-tui internals at runtime (tested against omp 18.18.x and 19.0.1); an omp update can
   break it. `/fullscreen off` or `OMP_FULLSCREEN=0` falls back to the normal screen.
+- If a frame throws, the error goes to omp's log, the mode turns itself off and the normal screen
+  comes back, so a host change cannot wedge the UI. `/fullscreen on` retries.
+- The patches install when the mode first starts, so `OMP_FULLSCREEN=0` leaves the host untouched
+  until you switch it on. A second extension that wraps `Composer.renderFrame` or `TUI.showOverlay`
+  must call the method it replaces.
 
 ## Tool groups
 
@@ -68,7 +115,8 @@ Notes:
 - Edits, writes, subagent tasks, `ask` and todo updates are never grouped: they draw in full and end the group.
 - With `display.showTokenUsage`, omp adds a stats row after every model request. Rows of requests that
   ended in tool calls are hidden, so each turn keeps one row under its final answer. This part patches
-  pi-tui internals and switches itself off if an omp update moves them.
+  pi-tui internals; it switches itself off if an omp update moves them, and a failed tag only logs a
+  warning instead of breaking the transcript.
 - While a group is live, its summary shimmers with omp's native shimmer, so `display.shimmer`
   selects classic or KITT (fullscreen mode only; disabled stops it, as do reduced/no Motion).
 - While a group is live, omp's live `Thinking…` pulse is hidden: the summary already counts it
@@ -76,3 +124,8 @@ Notes:
 - Finished thoughts are counted but drawn by omp as usual (hide them with `hideThinkingBlock`).
 - Built on omp's public transcript presenter API, so it should survive omp updates better than Fullscreen.
   Without Fullscreen, Ctrl+O only re-expands blocks still on screen (stock omp behavior); with it, every group expands.
+
+## License
+
+MIT.
+

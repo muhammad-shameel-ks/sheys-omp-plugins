@@ -1,9 +1,27 @@
 {
 	"name": "sheys-omp-plugins",
-	"version": "0.1.0",
+	"version": "0.2.0",
 	"private": true,
 	"type": "module",
+	"packageManager": "pnpm@12.21.0",
 	"description": "Personal oh-my-pi plugins",
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/muhammad-shameel-ks/sheys-omp-plugins.git"
+	},
+	"keywords": ["oh-my-pi", "omp", "plugin", "fullscreen", "transcript"],
+	"scripts": {
+		"check": "pnpm typecheck && pnpm smoke",
+		"smoke": "bash scripts/smoke.sh",
+		"typecheck": "tsc --noEmit"
+	},
+	"devDependencies": {
+		"@oh-my-pi/pi-coding-agent": "19.0.1",
+		"@oh-my-pi/pi-tui": "19.0.1",
+		"@types/bun": "^1.4.4",
+		"typescript": "^5.9.0"
+	},
 	"omp": {
 		"extensions": ["./fullscreen/index.ts", "./toolgroups/index.ts"]
 	}

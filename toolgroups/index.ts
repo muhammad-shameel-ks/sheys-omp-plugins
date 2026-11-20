@@ -280,58 +280,74 @@ type RenderFn = (this: object, width: number) => readonly string[];
  * when a tool block sits between it and the previous row or user message, and
  * draw tagged rows as nothing.
  */
-async function installStatsPatch(): Promise<boolean> {
+async function installStatsPatch(log?: ExtensionAPI["logger"]): Promise<boolean> {
 	if (stats.patched) return true;
 	try {
-		const [transcript, usage, tools, reads, user] = await Promise.all([
+		const [transcript, usage, tools, reads, user, assistant] = await Promise.all([
 			import("@oh-my-pi/pi-tui/chrome/transcript-container"),
 			import("@oh-my-pi/pi-tui/overlays/usage-row"),
 			import("@oh-my-pi/pi-tui/chat/tool-execution"),
 			import("@oh-my-pi/pi-tui/chat/read-tool-group"),
 			import("@oh-my-pi/pi-tui/chat/user-message"),
+			import("@oh-my-pi/pi-tui/chat/assistant-message"),
 		]);
 		const { TranscriptContainer } = transcript;
 		const { isUsageRowBlock } = usage;
 		const toolClasses = [tools.ToolExecutionComponent, reads.ReadToolGroupComponent];
 		const { UserMessageComponent } = user;
+		const { AssistantMessageComponent } = assistant;
 		if (
 			typeof TranscriptContainer?.prototype?.addChild !== "function" ||
 			typeof isUsageRowBlock !== "function" ||
 			toolClasses.some(cls => typeof cls !== "function") ||
-			typeof UserMessageComponent !== "function"
+			typeof UserMessageComponent !== "function" ||
+			typeof AssistantMessageComponent !== "function"
 		) {
 			return false;
 		}
 		if (stats.patched) return true;
-		stats.patched = true;
 
 		const patchedRenders = new WeakSet<object>();
 		const addChild = TranscriptContainer.prototype.addChild;
 		TranscriptContainer.prototype.addChild = function (this: InstanceType<typeof TranscriptContainer>, component) {
-			if (isUsageRowBlock(component)) {
-				const children = this.children;
-				for (let index = children.length - 1; index >= 0; index--) {
-					const child = children[index]!;
-					if (isUsageRowBlock(child) || child instanceof UserMessageComponent) break;
-					if (toolClasses.some(cls => child instanceof cls)) {
-						stats.intermediate.add(component);
-						break;
+			// Tagging is an extra: a moved internal must never break the transcript.
+			try {
+				if (isUsageRowBlock(component)) {
+					const children = this.children;
+					for (let index = children.length - 1; index >= 0; index--) {
+						const child = children[index]!;
+						if (isUsageRowBlock(child) || child instanceof UserMessageComponent) break;
+						// The component omp adds at this request's message start: the request's own
+						// answer, so its row stays. Tool blocks come after it, so they are seen first.
+						if (child instanceof AssistantMessageComponent) break;
+						if (toolClasses.some(cls => child instanceof cls)) {
+							stats.intermediate.add(component);
+							break;
+						}
+					}
+					const proto = Object.getPrototypeOf(component) as { render?: RenderFn } | null;
+					const render = proto?.render;
+					if (proto !== null && typeof render === "function" && !patchedRenders.has(proto)) {
+						patchedRenders.add(proto);
+						proto.render = function (this: object, width: number) {
+							try {
+								if (stats.hide && stats.intermediate.has(this)) return [];
+							} catch {
+								// A broken tag must not hide a real row.
+							}
+							return render.call(this, width);
+						};
 					}
 				}
-				const proto = Object.getPrototypeOf(component) as { render: RenderFn };
-				if (!patchedRenders.has(proto)) {
-					patchedRenders.add(proto);
-					const render = proto.render;
-					proto.render = function (this: object, width: number) {
-						if (stats.hide && stats.intermediate.has(this)) return [];
-						return render.call(this, width);
-					};
-				}
+			} catch (error) {
+				log?.warn("Tool groups: usage-row tagging skipped", { err: String(error) });
 			}
 			return addChild.call(this, component);
 		};
+		stats.patched = true;
 		return true;
-	} catch {
+	} catch (error) {
+		log?.debug("Tool groups: usage-row hiding unavailable on this omp version", { err: String(error) });
 		return false;
 	}
 }
@@ -349,26 +365,6 @@ const clickHandlers: Map<string, TranscriptClickHandler> = (clickGlobals[CLICK_K
 const LIVE_KEY = Symbol.for("sheys-omp-plugins.toolgroups.live");
 type LiveProbe = () => boolean;
 const liveGlobals = globalThis as typeof globalThis & { [LIVE_KEY]?: LiveProbe };
-
-/**
- * Tool call ids a transcript block draws. Presentable blocks ask `ids.has(id)` for
- * each call they draw before doing anything else; a set that records the question
- * and answers no leaves the block untouched.
- */
-function blockToolCallIds(block: object): string[] {
-	const refresh = (block as { refreshTranscriptPresentation?: (ids?: ReadonlySet<string>) => boolean })
-		.refreshTranscriptPresentation;
-	if (typeof refresh !== "function") return [];
-	const seen: string[] = [];
-	class Probe extends Set<string> {
-		override has(id: string): boolean {
-			seen.push(id);
-			return false;
-		}
-	}
-	refresh.call(block, new Probe());
-	return seen;
-}
 
 /** Rows of a full card that collapse its expanded group when clicked: its title. */
 const COLLAPSE_ROWS = 2;
@@ -388,10 +384,10 @@ export default function toolgroups(pi: ExtensionAPI): void {
 	let enabled = process.env.OMP_TOOLGROUPS !== "0";
 	let agentRunning = false;
 	let warnedSettingOff = false;
-	let statsPatched = false;
-	void installStatsPatch().then(ok => {
-		statsPatched = ok;
-	});
+	// Awaiting this from the command avoids reporting a race as "unavailable".
+	const statsReady = installStatsPatch(pi.logger);
+	/** Transcript blocks seen by the presenter, so a click can name the call it draws. */
+	const blockIds = new WeakMap<object, string>();
 	/** The context of the latest main-session event, for the shimmer timer's refreshes. */
 	let lastCtx: ExtensionContext | undefined;
 	let shimmerTimer: ReturnType<typeof setInterval> | undefined;
@@ -426,17 +422,16 @@ export default function toolgroups(pi: ExtensionAPI): void {
 	/** A summary row expands its group; the title row of a card in an expanded group collapses it. */
 	function onClick(block: object, row: number): boolean {
 		if (!enabled || !lastCtx) return false;
-		for (const id of blockToolCallIds(block)) {
-			const group = grouper.groupOf.get(id);
-			if (!group || group.ids.length < 2) continue;
-			const expand = !group.expanded && id === group.ids[0];
-			const collapse = group.expanded && row < COLLAPSE_ROWS;
-			if (!expand && !collapse) continue;
-			group.expanded = expand;
-			refresh(lastCtx, group.ids);
-			return true;
-		}
-		return false;
+		const id = blockIds.get(block);
+		if (id === undefined) return false;
+		const group = grouper.groupOf.get(id);
+		if (!group || group.ids.length < 2) return false;
+		const expand = !group.expanded && id === group.ids[0];
+		const collapse = group.expanded && row < COLLAPSE_ROWS;
+		if (!expand && !collapse) return false;
+		group.expanded = expand;
+		refresh(lastCtx, group.ids);
+		return true;
 	}
 
 	/** The group drawn live: still taking calls while the agent works, and past one call. */
@@ -476,6 +471,7 @@ export default function toolgroups(pi: ExtensionAPI): void {
 
 	pi.registerTranscriptPresenter(block => {
 		if (!enabled || block.type !== "toolCall") return undefined;
+		blockIds.set(block, block.id);
 		const group = grouper.groupOf.get(block.id);
 		if (!group) {
 			// Not fed yet (the block can be drawn before our message handler runs): a groupable
@@ -503,11 +499,14 @@ export default function toolgroups(pi: ExtensionAPI): void {
 			);
 		}
 	});
-	for (const event of ["session_switch", "session_branch", "session_tree", "session_clear", "session_compact"] as const) {
-		pi.on(event, (_event, ctx) => {
-			if (isMain(ctx)) rebuild(ctx);
-		});
-	}
+	const onRebuild = (ctx: ExtensionContext): void => {
+		if (isMain(ctx)) rebuild(ctx);
+	};
+	pi.on("session_switch", (_event, ctx) => onRebuild(ctx));
+	pi.on("session_branch", (_event, ctx) => onRebuild(ctx));
+	pi.on("session_tree", (_event, ctx) => onRebuild(ctx));
+	pi.on("session_clear", (_event, ctx) => onRebuild(ctx));
+	pi.on("session_compact", (_event, ctx) => onRebuild(ctx));
 
 	pi.on("agent_start", (_event, ctx) => {
 		if (!isMain(ctx)) return;
@@ -543,7 +542,7 @@ export default function toolgroups(pi: ExtensionAPI): void {
 		handler: async (args, ctx) => {
 			const arg = args.trim().toLowerCase();
 			if (arg === "stats" || arg.startsWith("stats ")) {
-				if (!statsPatched) {
+				if (!(await statsReady)) {
 					ctx.ui.notify("Usage-row hiding is unavailable on this omp version", "warning");
 					return;
 				}
