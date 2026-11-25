@@ -11,7 +11,7 @@ import path from "node:path";
 const DAILY_ENDPOINT = "https://daily-cloudcode-pa.googleapis.com";
 const PROD_ENDPOINT = "https://cloudcode-pa.googleapis.com";
 const USERINFO_URL = "https://www.googleapis.com/oauth2/v2/userinfo";
-const PROVIDER_ID = "agy";
+const PROVIDER_ID = "gemini-agent";
 
 // Consumer tiers are metered on the daily host, GCP-terms tiers on prod.
 const ENDPOINTS: Record<string, readonly string[]> = {

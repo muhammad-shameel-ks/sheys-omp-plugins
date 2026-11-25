@@ -129,15 +129,15 @@ Notes:
 
 T3-Code-style Gemini Agent (Antigravity CLI, `agy`) ACP provider for `omp` using your native `/login` and `/models` flows:
 
-- Adds an `agy` entry (`Gemini Agent`) directly in `/login`.
-- Exposes Gemini Agent models natively under `agy/...` in `/models` (discovered dynamically from `agy acp`).
+- Adds a `gemini-agent` entry (`Gemini Agent`) directly in `/login`.
+- Exposes Gemini Agent models natively under `gemini-agent/...` in `/models` (discovered dynamically from `agy acp`).
 - Spawns unmodified `agy acp --stdio` with `clientInfo.name = "zed"` (no `--agent bridge`,
   no `_meta.antigravity.systemPrompt.append`, and no loopback MCP tool hijacking).
 
 Notes:
 
 - Requires `agy` installed on `PATH` (or `OMP_AGY_ACP_BIN=/path/to/agy`).
-- `/login` -> `agy` verifies any existing `agy` login or runs ACP authentication (`oauth-personal`,
+- `/login` -> `gemini-agent` verifies any existing `agy` login or runs ACP authentication (`oauth-personal`,
   `oauth-business`, `gemini-api-key`, `agent-platform`).
 - Optional environment variables:
   - `OMP_AGY_ACP_CLIENT`: override ACP `clientInfo.name` (defaults to `zed`, which exposes the full Gemini + Claude + GPT-OSS catalog).

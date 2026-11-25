@@ -3,7 +3,7 @@
  * Exercises NDJSON framing, configOptions/models/modes normalization,
  * TurnAccumulator, fs/terminal capability hosts, AgyAcpClient, AgyProviderRuntime
  * (`oauth`, `fetchDynamicModels`, `runStream`, `buildPromptBlocksFromContext`),
- * `index.ts` `pi.registerProvider("agy", ...)` wiring, and real `agy acp` initialize.
+ * `index.ts` `pi.registerProvider("gemini-agent", ...)` wiring, and real `agy acp` initialize.
  */
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -467,7 +467,7 @@ describe("AgyProviderRuntime", () => {
 				onProgress: msg => progress.push(msg),
 			});
 			assert.equal(oauth.getApiKey(creds), "agy-acp-session");
-			assert.ok(progress.some(p => p.includes("Existing agy login verified")));
+			assert.ok(progress.some(p => p.includes("Existing Gemini Agent login verified")));
 
 			const s1 = collectStream();
 			runtime.runStream(
@@ -560,7 +560,7 @@ describe("AgyProviderRuntime", () => {
 });
 
 describe("index.ts native registerProvider wiring and real agy initialize smoke", () => {
-	it("registers provider `agy` with oauth + models + fetchDynamicModels + streamSimple and cleans up on shutdown", async () => {
+	it("registers provider `gemini-agent` with oauth + models + fetchDynamicModels + streamSimple and cleans up on shutdown", async () => {
 		const dir = await makeTempDir("agy-idx-");
 		await writeFile(path.join(dir, "hello.txt"), "idx-ok", "utf8");
 		const { binPath } = await createMockAgyBinary("ok");
@@ -626,9 +626,9 @@ export class AssistantMessageEventStream {
 			agyAcp(mockPi);
 			assert.equal(commands.length, 0);
 			assert.equal(registered.length, 1);
-			assert.equal(registered[0]!.name, "agy");
+			assert.equal(registered[0]!.name, "gemini-agent");
 			assert.equal(registered[0]!.config.api, AGY_API_NAME);
-			assert.equal(registered[0]!.config.oauth.name, "Antigravity ACP (agy)");
+			assert.equal(registered[0]!.config.oauth.name, "Gemini Agent");
 
 			await handlers.get("session_start")?.({}, mockCtx);
 
@@ -636,7 +636,7 @@ export class AssistantMessageEventStream {
 			assert.equal(liveModels[0].id, "gemini-3.8-flash");
 
 			const stream = registered[0]!.config.streamSimple(
-				{ id: "gemini-4-pro", api: AGY_API_NAME, provider: "agy" },
+				{ id: "gemini-4-pro", api: AGY_API_NAME, provider: "gemini-agent" },
 				{ messages: [{ role: "user", content: "Read hello.txt" }] },
 				{ sessionId: "idx-sess" },
 			);

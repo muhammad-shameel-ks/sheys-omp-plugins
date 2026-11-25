@@ -26,7 +26,7 @@ import type {
 	TurnSnapshot,
 } from "./protocol.ts";
 
-export const AGY_PROVIDER_NAME = "agy";
+export const AGY_PROVIDER_NAME = "gemini-agent";
 export const AGY_API_NAME = "t3-agy-acp";
 export const AGY_BASE_URL = "https://antigravity-acp.invalid/";
 
@@ -475,7 +475,7 @@ export class AgyProviderRuntime {
 					callbacks.onProgress?.("Connecting to agy acp...");
 					const init = await client.ensureConnected();
 
-					// First probe if agy already has a valid local login so `/login` -> `agy`
+					// First probe if agy already has a valid local login so `/login` -> `gemini-agent`
 					// works seamlessly without forcing a redundant browser sign-in.
 					if (process.env.OMP_AGY_FORCE_RELOGIN !== "1") {
 						let alreadyAuthenticated = false;
@@ -488,7 +488,7 @@ export class AgyProviderRuntime {
 						}
 
 						if (alreadyAuthenticated) {
-							callbacks.onProgress?.("Existing agy login verified.");
+							callbacks.onProgress?.("Existing Gemini Agent login verified.");
 							return {
 								refresh: "oauth-personal",
 								access: "agy-acp-session",

@@ -1,6 +1,6 @@
 /**
  * Native Antigravity ACP provider for oh-my-pi (`omp`):
- * - Adds `agy` ("Gemini Agent") directly to `/login`.
+ * - Adds `gemini-agent` ("Gemini Agent") directly to `/login`.
  * - Exposes Antigravity's Gemini models directly in `/models`.
  * - Streams turns through an unmodified `agy acp --stdio` host using T3 Code's
  *   thin-client ACP model (no `--agent bridge`, no `_meta.antigravity.systemPrompt.append`,
