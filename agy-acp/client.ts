@@ -610,7 +610,7 @@ export class AgyAcpClient {
 		onUpdate?: (snapshot: TurnSnapshot) => void,
 	): Promise<AgyTurnResult> {
 		if (this.#activeTurn) {
-			throw new Error("Antigravity ACP already has an active turn running (use /agy cancel to stop it)");
+			throw new Error("Gemini Agent already has an active turn running (use /agy cancel to stop it)");
 		}
 		const { sessionId } = await this.ensureSession(cwd);
 		const accumulator = new TurnAccumulator();

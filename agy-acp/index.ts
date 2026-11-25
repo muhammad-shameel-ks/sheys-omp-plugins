@@ -1,6 +1,6 @@
 /**
  * Native Antigravity ACP provider for oh-my-pi (`omp`):
- * - Adds `agy` ("Antigravity ACP (agy)") directly to `/login`.
+ * - Adds `agy` ("Gemini Agent") directly to `/login`.
  * - Exposes Antigravity's Gemini models directly in `/models`.
  * - Streams turns through an unmodified `agy acp --stdio` host using T3 Code's
  *   thin-client ACP model (no `--agent bridge`, no `_meta.antigravity.systemPrompt.append`,
@@ -26,13 +26,13 @@ function formatPermissionChoice(request: PermissionRequest): { title: string; la
 	const kind = tool?.kind ? ` [${tool.kind}]` : "";
 	const raw = tool?.command ?? (tool?.rawInput !== undefined ? JSON.stringify(tool.rawInput) : "");
 	const detail = raw ? `: ${String(raw).replace(/\s+/g, " ").slice(0, 80)}` : "";
-	const title = `${tool?.title?.trim() || "Antigravity ACP permission"}${kind}${detail}`;
+	const title = `${tool?.title?.trim() || "Gemini Agent permission"}${kind}${detail}`;
 	const labels = request.options.map(opt => (opt.kind ? `${opt.name} (${opt.kind})` : opt.name));
 	return { title, labels };
 }
 
 export default function agyAcp(pi: ExtensionAPI): void {
-	pi.setLabel?.("Antigravity ACP");
+	pi.setLabel?.("Gemini Agent");
 	let latestCtx: ExtensionContext | undefined;
 
 	const runtime = new AgyProviderRuntime({

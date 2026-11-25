@@ -125,12 +125,12 @@ Notes:
 - Built on omp's public transcript presenter API, so it should survive omp updates better than Fullscreen.
   Without Fullscreen, Ctrl+O only re-expands blocks still on screen (stock omp behavior); with it, every group expands.
 
-## Antigravity ACP (`agy-acp`)
+## Gemini Agent (`agy-acp`)
 
-T3-Code-style Antigravity ACP provider for `omp` using your native `/login` and `/models` flows:
+T3-Code-style Gemini Agent (Antigravity CLI, `agy`) ACP provider for `omp` using your native `/login` and `/models` flows:
 
-- Adds an `agy` entry (`Antigravity ACP (agy)`) directly in `/login`.
-- Exposes Antigravity models natively under `agy/...` in `/models` (discovered dynamically from `agy acp`).
+- Adds an `agy` entry (`Gemini Agent`) directly in `/login`.
+- Exposes Gemini Agent models natively under `agy/...` in `/models` (discovered dynamically from `agy acp`).
 - Spawns unmodified `agy acp --stdio` with `clientInfo.name = "zed"` (no `--agent bridge`,
   no `_meta.antigravity.systemPrompt.append`, and no loopback MCP tool hijacking).
 

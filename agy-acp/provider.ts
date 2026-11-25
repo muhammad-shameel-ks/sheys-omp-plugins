@@ -467,7 +467,7 @@ export class AgyProviderRuntime {
 
 	createOAuthConfig() {
 		return {
-			name: "Antigravity ACP (agy)",
+			name: "Gemini Agent",
 			login: async (callbacks: OAuthCallbacksLike): Promise<OAuthCredentialsLike> => {
 				resolveAgyBinary(this.#clientConfig.binaryPath);
 				const client = this.#makeClient();
@@ -502,14 +502,14 @@ export class AgyProviderRuntime {
 					if (methods.length > 1) {
 						if (callbacks.onSelect) {
 							methodId = await callbacks.onSelect({
-								message: "Antigravity ACP login method",
+								message: "Gemini Agent login method",
 								options: methods.map(m => ({ label: `${m.name} (${m.id})`, value: m.id })),
 							});
 						} else {
 							const choices = methods.map((m, idx) => `${idx + 1}=${m.name} (${m.id})`).join(", ");
 							const answer = (
 								await callbacks.onPrompt({
-									message: `Antigravity login method [${choices}] (default 1):`,
+									message: `Gemini Agent login method [${choices}] (default 1):`,
 									placeholder: "1",
 								})
 							).trim();
