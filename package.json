@@ -23,6 +23,6 @@
 		"typescript": "^5.9.0"
 	},
 	"omp": {
-		"extensions": ["./fullscreen/index.ts", "./toolgroups/index.ts"]
+		"extensions": ["./fullscreen/index.ts", "./toolgroups/index.ts", "./agy-acp/index.ts"]
 	}
 }

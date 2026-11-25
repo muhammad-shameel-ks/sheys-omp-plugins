@@ -125,6 +125,26 @@ Notes:
 - Built on omp's public transcript presenter API, so it should survive omp updates better than Fullscreen.
   Without Fullscreen, Ctrl+O only re-expands blocks still on screen (stock omp behavior); with it, every group expands.
 
+## Antigravity ACP (`agy-acp`)
+
+T3-Code-style Antigravity ACP provider for `omp` using your native `/login` and `/models` flows:
+
+- Adds an `agy` entry (`Antigravity ACP (agy)`) directly in `/login`.
+- Exposes Antigravity models natively under `agy/...` in `/models` (discovered dynamically from `agy acp`).
+- Spawns unmodified `agy acp --stdio` with `clientInfo.name = "zed"` (no `--agent bridge`,
+  no `_meta.antigravity.systemPrompt.append`, and no loopback MCP tool hijacking).
+
+Notes:
+
+- Requires `agy` installed on `PATH` (or `OMP_AGY_ACP_BIN=/path/to/agy`).
+- `/login` -> `agy` verifies any existing `agy` login or runs ACP authentication (`oauth-personal`,
+  `oauth-business`, `gemini-api-key`, `agent-platform`).
+- Optional environment variables:
+  - `OMP_AGY_ACP_CLIENT`: override ACP `clientInfo.name` (defaults to `zed`, which exposes the full Gemini + Claude + GPT-OSS catalog).
+  - `OMP_AGY_APPROVE`: permission policy (`ask`, `accept-edits`, or `auto`; defaults to `ask`).
+  - `OMP_AGY_FORCE_FILE_STORAGE=1`: sets `AGY_ACP_FORCE_FILE_STORAGE=1` when spawning `agy`.
+- `/usage` reads limits using `agy`'s own saved sign-in (keychain or token file), as T3 Code does; the token is never stored by omp.
+
 ## License
 
 MIT.
