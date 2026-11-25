@@ -32,6 +32,9 @@ function formatPermissionChoice(request: PermissionRequest): { title: string; la
 }
 
 export default function agyAcp(pi: ExtensionAPI): void {
+	// Disabled by default until Google publishes official guidance on third-party harnesses driving `agy`.
+	// Antigravity's Additional Terms (§6) and FAQ do not support this on consumer plans.
+	if (process.env.OMP_AGY_ENABLE !== "1") return;
 	pi.setLabel?.("Gemini Agent");
 	let latestCtx: ExtensionContext | undefined;
 

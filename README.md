@@ -127,6 +127,10 @@ Notes:
 
 ## Gemini Agent (`agy-acp`)
 
+> **Disabled by default.** Google's Antigravity Additional Terms (§6) and FAQ say using third-party software with an Antigravity login, or wrapping `agy` in third-party coding agents, is not supported on consumer plans and can lead to suspension. The extension does nothing unless `OMP_AGY_ENABLE=1` is set; doing so on a consumer Google account is at your own risk. It will be enabled once Google publishes official guidance that allows this use.
+>
+> Known risks to resolve before enabling by default: the ACP client name defaults to `zed` (to expose the Claude/GPT catalog), and `/usage` reads `agy`'s saved OAuth token directly. Google has said neither is covered by its guidance for third-party clients.
+
 T3-Code-style Gemini Agent (Antigravity CLI, `agy`) ACP provider for `omp` using your native `/login` and `/models` flows:
 
 - Adds a `gemini-agent` entry (`Gemini Agent`) directly in `/login`.
